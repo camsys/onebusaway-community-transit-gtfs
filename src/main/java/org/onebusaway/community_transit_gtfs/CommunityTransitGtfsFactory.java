@@ -85,6 +85,10 @@ public class CommunityTransitGtfsFactory {
   private File _gtfsOutputPath;
 
   private String _modificationsPath;
+  
+  private ServiceDate _calendarStartDate;
+	  
+  private ServiceDate _calendarEndDate;
 
   /**
    * From APTA's set of agency ids
@@ -516,8 +520,8 @@ public class CommunityTransitGtfsFactory {
         throw new IllegalStateException("unknown schedule type: "
             + scheduleType);
       }
-      c.setStartDate(new ServiceDate(2010, 06, 12));
-      c.setEndDate(new ServiceDate(2010, 10, 01));
+      c.setStartDate(_calendarStartDate);
+      c.setEndDate(_calendarEndDate);
 
       _dao.saveEntity(c);
     }
@@ -658,6 +662,15 @@ public class CommunityTransitGtfsFactory {
 
   private AgencyAndId id(String id) {
     return new AgencyAndId(_agencyId, id);
+  }
+
+  public void setCalendarStartDate(ServiceDate startDate) {
+	_calendarStartDate = startDate;
+
+  }
+
+  public void setCalendarEndDate(ServiceDate endDate) {
+	_calendarEndDate = endDate;
   }
 
 }

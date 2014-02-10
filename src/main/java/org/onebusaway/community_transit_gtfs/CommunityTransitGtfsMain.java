@@ -17,11 +17,14 @@ package org.onebusaway.community_transit_gtfs;
 
 import java.io.File;
 
+import org.onebusaway.gtfs.model.calendar.ServiceDate;
+
 public class CommunityTransitGtfsMain {
 
-  public static void main(String[] args) throws Exception {
 
-    if (args.length != 3 && args.length != 4) {
+	public static void main(String[] args) throws Exception {
+
+    if (args.length != 5 && args.length != 6) {
       usage();
       System.exit(-1);
     }
@@ -30,6 +33,8 @@ public class CommunityTransitGtfsMain {
     factory.setScheduleInputPath(new File(args[0]));
     factory.setGisInputPath(new File(args[1]));
     factory.setGtfsOutputPath(new File(args[2]));
+    factory.setCalendarStartDate(parseDate(args[3]));
+    factory.setCalendarEndDate(parseDate(args[4]));
     
     if( args.length == 4)
       factory.setModificationsPath(args[3]);
@@ -37,8 +42,12 @@ public class CommunityTransitGtfsMain {
     factory.run();
   }
 
+  private static ServiceDate parseDate(String s) throws Exception {
+	  return ServiceDate.parseString(s);
+  }
+  
   private static void usage() {
-    System.err.println("usage: schedule_path gis_path gtfs_path [modifications]");
+    System.err.println("usage: schedule_path gis_path gtfs_path start_date end_date [modifications]");
 
   }
 }

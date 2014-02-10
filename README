@@ -8,6 +8,8 @@ java -jar target/onebusaway-community-transit-gtfs-0.0.1-SNAPSHOT.jar \
   path/to/schedules/ \
   path/to/gis/ \
   path/to/resulting/gtfs/ \
+  20100602 \
+  20101201 \
   https://onebusaway.googlecode.com/svn/wiki/CommunityTransitModifications.wiki
 
 Where path/to/schedules/ is the extracted directory of Community Transit
