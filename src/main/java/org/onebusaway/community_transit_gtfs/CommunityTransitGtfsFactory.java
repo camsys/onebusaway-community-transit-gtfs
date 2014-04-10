@@ -537,12 +537,12 @@ public class CommunityTransitGtfsFactory {
     transformer.setGtfsInputDirectory(_gtfsOutputPath);
     transformer.setOutputDirectory(_gtfsOutputPath);
 
-    TransformFactory modificationFactory = new TransformFactory();
+    TransformFactory modificationFactory = new TransformFactory(transformer);
     if (_modificationsPath.startsWith("http")) {
-      modificationFactory.addModificationsFromUrl(transformer, new URL(
+      modificationFactory.addModificationsFromUrl(new URL(
           _modificationsPath));
     } else {
-      modificationFactory.addModificationsFromFile(transformer, new File(
+      modificationFactory.addModificationsFromFile(new File(
           _modificationsPath));
     }
 
