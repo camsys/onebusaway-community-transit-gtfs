@@ -35,6 +35,7 @@ import java.util.regex.Pattern;
 
 import org.apache.commons.digester.Digester;
 import org.geotools.feature.FeatureCollection;
+import org.geotools.feature.FeatureIterator;
 import org.onebusaway.community_transit_gtfs.xml.PttPlaceInfo;
 import org.onebusaway.community_transit_gtfs.xml.PttPlaceInfoPlace;
 import org.onebusaway.community_transit_gtfs.xml.PttRoute;
@@ -157,8 +158,8 @@ public class CommunityTransitGtfsFactory {
     File stopsShapeFile = new File(_gisInputPath, "CTBusStops.shp");
 
     FeatureCollection<SimpleFeatureType, SimpleFeature> features = ShapefileLibrary.loadShapeFile(stopsShapeFile);
-
-    Iterator<SimpleFeature> it = features.iterator();
+    
+    FeatureIterator<SimpleFeature> it = features.features();
 
     while (it.hasNext()) {
 
@@ -178,7 +179,7 @@ public class CommunityTransitGtfsFactory {
       _dao.saveEntity(stop);
     }
 
-    features.close(it);
+    it.close();
   }
 
   private String computeStopName(String primaryName, String crossName) {
@@ -194,7 +195,7 @@ public class CommunityTransitGtfsFactory {
 
     FeatureCollection<SimpleFeatureType, SimpleFeature> features = ShapefileLibrary.loadShapeFile(routesShapeFile);
 
-    Iterator<SimpleFeature> it = features.iterator();
+    FeatureIterator<SimpleFeature> it = features.features();
 
     while (it.hasNext()) {
       SimpleFeature feature = it.next();
@@ -225,7 +226,7 @@ public class CommunityTransitGtfsFactory {
       item.setGeometry(feature.getDefaultGeometry());
       sequence.add(item);
     }
-    features.close(it);
+    it.close();
   }
 
   private void processShapes() {
