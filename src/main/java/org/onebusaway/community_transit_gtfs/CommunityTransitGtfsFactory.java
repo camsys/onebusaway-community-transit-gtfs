@@ -41,6 +41,8 @@ import org.onebusaway.community_transit_gtfs.xml.PttRoute;
 import org.onebusaway.community_transit_gtfs.xml.PttTimingPoint;
 import org.onebusaway.community_transit_gtfs.xml.PttTrip;
 import org.onebusaway.community_transit_gtfs.xml.PublicTimeTable;
+import org.onebusaway.geospatial.model.CoordinatePoint;
+import org.onebusaway.geospatial.services.SphericalGeometryLibrary;
 import org.onebusaway.gtfs.impl.GtfsDaoImpl;
 import org.onebusaway.gtfs.model.Agency;
 import org.onebusaway.gtfs.model.AgencyAndId;
@@ -54,6 +56,17 @@ import org.onebusaway.gtfs.model.calendar.ServiceDate;
 import org.onebusaway.gtfs.serialization.GtfsWriter;
 import org.onebusaway.gtfs_transformer.GtfsTransformer;
 import org.onebusaway.gtfs_transformer.factory.TransformFactory;
+import org.onebusaway.transit_data_federation.bundle.tasks.transit_graph.DistanceAlongShapeLibrary;
+import org.onebusaway.transit_data_federation.bundle.tasks.transit_graph.DistanceAlongShapeLibrary.DistanceAlongShapeException;
+import org.onebusaway.transit_data_federation.bundle.tasks.transit_graph.DistanceAlongShapeLibrary.StopIsTooFarFromShapeException;
+import org.onebusaway.transit_data_federation.impl.shapes.PointAndIndex;
+import org.onebusaway.transit_data_federation.impl.transit_graph.StopEntryImpl;
+import org.onebusaway.transit_data_federation.impl.transit_graph.StopTimeEntryImpl;
+import org.onebusaway.transit_data_federation.model.ShapePoints;
+import org.onebusaway.transit_data_federation.services.transit_graph.StopEntry;
+import org.onebusaway.transit_data_federation.services.transit_graph.StopTimeEntry;
+import org.onebusaway.transit_data_federation.services.transit_graph.TripEntry;
+import org.onebusaway.utility.InterpolationLibrary;
 import org.opengis.feature.simple.SimpleFeature;
 import org.opengis.feature.simple.SimpleFeatureType;
 import org.slf4j.Logger;
@@ -96,6 +109,8 @@ public class CommunityTransitGtfsFactory {
   private String _agencyId = "29";
 
   private GtfsDaoImpl _dao = new GtfsDaoImpl();
+  
+  private DistanceAlongShapeLibrary _distanceAlongShapeLibrary;
 
   private Agency _agency;
 
@@ -103,7 +118,13 @@ public class CommunityTransitGtfsFactory {
 
   private Map<AgencyAndId, String> _serviceIdAndScheduleType = new HashMap<AgencyAndId, String>();
 
+  private Map<AgencyAndId, List<ShapePoint>> _idToShapeMap = new HashMap<AgencyAndId, List<ShapePoint>>();
+  
   private Date _midnight;
+  
+  private boolean _interpolateStopTimes = false;
+
+  private int _invalidStopToShapeMappingExceptionCount;
 
   public void setGisInputPath(File gisInputPath) {
     _gisInputPath = gisInputPath;
@@ -120,9 +141,16 @@ public class CommunityTransitGtfsFactory {
   public void setModificationsPath(String modificationsPath) {
     _modificationsPath = modificationsPath;
   }
+  
+  public void setInterpolateStopTimes(boolean _interpolateStopTimes) {
+    this._interpolateStopTimes = _interpolateStopTimes;
+  }
 
   public void run() throws Exception {
-
+    _log.info("running with interpolateStopTimes=" + _interpolateStopTimes);
+    
+    _distanceAlongShapeLibrary = new DistanceAlongShapeLibrary();
+    
     processAgency();
     processStops();
     processRoutesStopSequences();
@@ -139,6 +167,10 @@ public class CommunityTransitGtfsFactory {
     _dao = null;
 
     applyModifications();
+    
+    if (this._invalidStopToShapeMappingExceptionCount > 0) {
+      _log.warn("found " + _invalidStopToShapeMappingExceptionCount + " invalid stop to shape mappings");
+    }
   }
 
   private void processAgency() {
@@ -237,7 +269,10 @@ public class CommunityTransitGtfsFactory {
 
       AgencyAndId shapeId = id(rawId);
       int sequence = 0;
-
+      double distanceAlongShape = 0.0;
+      List<ShapePoint> shapePoints = new ArrayList<ShapePoint>();
+      this._idToShapeMap.put(shapeId, shapePoints);
+      
       for (RouteStopSequenceItem item : stopSequence) {
         MultiLineString mls = (MultiLineString) item.getGeometry();
         for (int i = 0; i < mls.getNumGeometries(); i++) {
@@ -249,6 +284,11 @@ public class CommunityTransitGtfsFactory {
             shapePoint.setLat(c.y);
             shapePoint.setLon(c.x);
             shapePoint.setSequence(sequence);
+            if (this._interpolateStopTimes) {
+              shapePoint.setDistTraveled(distanceAlongShape);
+            }
+            shapePoints.add(shapePoint);
+            
             _dao.saveEntity(shapePoint);
             sequence++;
           }
@@ -318,7 +358,8 @@ public class CommunityTransitGtfsFactory {
       Trip trip) throws ParseException {
 
     SortedMap<Integer, Integer> arrivalTimesByTimepointPosition = computeTimepointPositionToScheduleTimep(pttTrip);
-
+    List<StopTime> stopTimes = new ArrayList<StopTime>();
+    
     if (arrivalTimesByTimepointPosition.size() < 2) {
       _log.warn("less than two timepoints specified for trip: id="
           + trip.getId());
@@ -366,34 +407,247 @@ public class CommunityTransitGtfsFactory {
         stopTime.setArrivalTime(time);
         stopTime.setDepartureTime(time);
       }
-
+      
       _dao.saveEntity(stopTime);
+      stopTimes.add(stopTime);
 
       if (first == null)
         first = stopTime;
       last = stopTime;
     }
 
-    if (!first.isDepartureTimeSet()) {
-      _log.warn("departure time for first StopTime is not set: stop="
-          + first.getStop().getId() + " trip=" + tripIdRaw + " firstPosition="
-          + firstTimepointPosition + " lastPosition=" + lastTimepointPosition);
-      for (RouteStopSequenceItem item : stopSequence)
-        _log.warn("  stop=" + item.getStopId() + " timepoint="
-            + item.getTimePoint() + " pos="
-            + timepointPositions.get(item.getTimePoint()));
-    }
-
-    if (!last.isArrivalTimeSet()) {
-      _log.warn("arrival time for last StopTime is not set: stop="
-          + last.getStop().getId() + " trip=" + tripIdRaw + " firstPosition="
-          + firstTimepointPosition + " lastPosition=" + lastTimepointPosition);
-      for (RouteStopSequenceItem item : stopSequence)
-        _log.warn("  stop=" + item.getStopId() + " timepoint="
-            + item.getTimePoint() + " pos="
-            + timepointPositions.get(item.getTimePoint()));
+    if (this._interpolateStopTimes) {
+      List<ShapePoint> shapePoints = findShapes(trip.getShapeId());
+      List<StopTimeEntryImpl> stopTimeEntries = ensureStopTimesHaveShapeDistanceTraveledSet(trip.getShapeId(), stopTimes, shapePoints);
+      ensureStopTimesHaveTimesSet(stopTimes, stopTimeEntries);
+      // now copy values back to stopTime models
+      int i = 0;
+      for (StopTimeEntryImpl e : stopTimeEntries) {
+        StopTime m = stopTimes.get(i);
+        m.setArrivalTime(e.getArrivalTime());
+        m.setDepartureTime(e.getDepartureTime());
+        i++;
+      }
+      
+      if (!first.isDepartureTimeSet()) {
+        _log.warn("departure time for first StopTime is not set: stop="
+            + first.getStop().getId() + " trip=" + tripIdRaw + " firstPosition="
+            + firstTimepointPosition + " lastPosition=" + lastTimepointPosition);
+        for (RouteStopSequenceItem item : stopSequence)
+          _log.warn("  stop=" + item.getStopId() + " timepoint="
+              + item.getTimePoint() + " pos="
+              + timepointPositions.get(item.getTimePoint()));
+      }
+  
+      if (!last.isArrivalTimeSet()) {
+        _log.warn("arrival time for last StopTime is not set: stop="
+            + last.getStop().getId() + " trip=" + tripIdRaw + " firstPosition="
+            + firstTimepointPosition + " lastPosition=" + lastTimepointPosition);
+        for (RouteStopSequenceItem item : stopSequence)
+          _log.warn("  stop=" + item.getStopId() + " timepoint="
+              + item.getTimePoint() + " pos="
+              + timepointPositions.get(item.getTimePoint()));
+      }
     }
   }
+
+
+  // This is a port of StopTimeEntriesFactory
+  private List<StopTimeEntryImpl> ensureStopTimesHaveShapeDistanceTraveledSet(AgencyAndId shapeId,
+      List<StopTime> stopTimeModels, List<ShapePoint> shapePointsList) {
+    boolean distanceTraveledSet = false;
+    ShapePoints shapePoints = toShapePoints(shapeId, shapePointsList);
+    List<StopTimeEntryImpl> stopTimes = convert(stopTimeModels);
+    
+    if (shapePointsList != null && stopTimes != null) {
+      try {
+        PointAndIndex[] stopTimePoints = _distanceAlongShapeLibrary.getDistancesAlongShape(shapePoints, stopTimes);
+        for (int i = 0; i < stopTimePoints.length; i++) {
+          PointAndIndex pindex = stopTimePoints[i];
+          StopTimeEntryImpl stopTime = stopTimes.get(i);
+          stopTime.setShapePointIndex(pindex.index);
+          stopTime.setShapeDistTraveled(pindex.distanceAlongShape);
+        }
+
+        distanceTraveledSet = true;
+      } catch (StopIsTooFarFromShapeException ex) {
+        StopTimeEntry stopTime = ex.getStopTime();
+        TripEntry trip = stopTime.getTrip();
+        StopEntry stop = stopTime.getStop();
+        CoordinatePoint point = ex.getPoint();
+        PointAndIndex pindex = ex.getPointAndIndex();
+
+        _log.warn("Stop is too far from shape: trip=" + trip.getId() + " stop="
+            + stop.getId() + " stopLat=" + stop.getStopLat() + " stopLon="
+            + stop.getStopLon() + " shapeId=" + shapeId + " shapePoint="
+            + point + " index=" + pindex.index + " distance="
+            + pindex.distanceFromTarget);
+      } catch (DistanceAlongShapeException e) {
+        _invalidStopToShapeMappingExceptionCount++;
+      } catch (IllegalArgumentException iae) {
+        _log.warn("Stop has illegal coordinates along shapes=" + shapePoints);
+      }
+    } else {
+      _log.error("shapePointsList/stopTimes is null for shapeId=" + shapeId + "; shapePointsList=" + shapePointsList + ", stopTimes=" + stopTimes);
+    }
+    if (!distanceTraveledSet) {
+
+      // Make do without
+      double d = 0;
+      StopTimeEntryImpl prev = null;
+      for (StopTimeEntryImpl stopTime : stopTimes) {
+        if (prev != null) {
+          CoordinatePoint from = prev.getStop().getStopLocation();
+          CoordinatePoint to = stopTime.getStop().getStopLocation();
+          d += SphericalGeometryLibrary.distance(from, to);
+        }
+        stopTime.setShapeDistTraveled(d);
+        prev = stopTime;
+      }
+    }
+
+    // now copy those values back to source stopTimeModels
+    int i = 0;
+    for (StopTimeEntryImpl e : stopTimes) {
+      StopTime m = stopTimeModels.get(i);
+      if (e.getShapeDistTraveled() != StopTime.MISSING_VALUE) {
+        m.setShapeDistTraveled(e.getShapeDistTraveled());
+      }
+      i++;
+    }
+    return stopTimes;
+  }
+
+  private void ensureStopTimesHaveTimesSet(List<StopTime> stopTimes,
+      List<StopTimeEntryImpl> stopTimeEntries) {
+
+    double[] distanceTraveled = getDistanceTraveledForStopTimes(stopTimeEntries);
+
+    int[] arrivalTimes = new int[stopTimes.size()];
+    int[] departureTimes = new int[stopTimes.size()];
+
+    interpolateArrivalAndDepartureTimes(stopTimes, distanceTraveled,
+        arrivalTimes, departureTimes);
+
+    int sequence = 0;
+    int accumulatedSlackTime = 0;
+    StopTimeEntryImpl prevStopTimeEntry = null;
+
+    for (StopTimeEntryImpl stopTimeEntry : stopTimeEntries) {
+
+      int arrivalTime = arrivalTimes[sequence];
+      int departureTime = departureTimes[sequence];
+
+      stopTimeEntry.setArrivalTime(arrivalTime);
+      stopTimeEntry.setDepartureTime(departureTime);
+
+      stopTimeEntry.setAccumulatedSlackTime(accumulatedSlackTime);
+      accumulatedSlackTime += stopTimeEntry.getDepartureTime()
+          - stopTimeEntry.getArrivalTime();
+
+      if (prevStopTimeEntry != null) {
+
+        int duration = stopTimeEntry.getArrivalTime()
+            - prevStopTimeEntry.getDepartureTime();
+
+        if (duration < 0) {
+          throw new IllegalStateException();
+        }
+      }
+
+      prevStopTimeEntry = stopTimeEntry;
+
+      sequence++;
+    }
+  }
+
+  private double[] getDistanceTraveledForStopTimes(
+      List<StopTimeEntryImpl> stopTimeEntries) {
+
+    double[] distances = new double[stopTimeEntries.size()];
+
+    for (int i = 0; i < stopTimeEntries.size(); i++) {
+      StopTimeEntryImpl stopTime = stopTimeEntries.get(i);
+      distances[i] = stopTime.getShapeDistTraveled();
+    }
+
+    return distances;
+  }
+
+  
+  private ShapePoints toShapePoints(AgencyAndId shapeId, List<ShapePoint> shapePoints) {
+    shapePoints = deduplicateShapePoints(shapePoints);
+
+    if (shapePoints.isEmpty()) {
+      return null;
+    }
+
+    int n = shapePoints.size();
+
+    double[] lat = new double[n];
+    double[] lon = new double[n];
+    double[] distTraveled = new double[n];
+
+    int i = 0;
+    for (ShapePoint shapePoint : shapePoints) {
+      lat[i] = shapePoint.getLat();
+      lon[i] = shapePoint.getLon();
+      i++;
+    }
+
+    ShapePoints result = new ShapePoints();
+    result.setShapeId(shapeId);
+    result.setLats(lat);
+    result.setLons(lon);
+    result.setDistTraveled(distTraveled);
+
+    result.ensureDistTraveled();
+
+    return result;
+  }
+
+  private List<ShapePoint> deduplicateShapePoints(List<ShapePoint> shapePoints) {
+
+    List<ShapePoint> deduplicated = new ArrayList<ShapePoint>();
+    ShapePoint prev = null;
+
+    for (ShapePoint shapePoint : shapePoints) {
+      if (prev == null
+          || !(prev.getLat() == shapePoint.getLat() && prev.getLon() == shapePoint.getLon())) {
+        deduplicated.add(shapePoint);
+      }
+      prev = shapePoint;
+    }
+
+    return deduplicated;
+  }
+  private List<StopTimeEntryImpl> convert(List<StopTime> stopTimes) {
+    List<StopTimeEntryImpl> entries = new ArrayList<StopTimeEntryImpl>();
+    for (StopTime st : stopTimes) {
+      entries.add(convert(st));
+    }
+    return entries;
+  }
+
+  private StopTimeEntryImpl convert(StopTime st) {
+    StopTimeEntryImpl i = new StopTimeEntryImpl();
+    i.setId(st.getId());
+    i.setSequence(st.getStopSequence());
+    i.setDropOffType(st.getDropOffType());
+    i.setPickupType(st.getPickupType());
+    AgencyAndId stopId = st.getStop().getId();
+    Stop stop = _dao.getStopForId(stopId);
+    double lat = stop.getLat();
+    double lon = stop.getLon();
+    StopEntryImpl stopEntry = new StopEntryImpl(stopId, lat, lon);
+    i.setStop(stopEntry);
+    return i;
+  }
+
+  private List<ShapePoint> findShapes(AgencyAndId shapeId) {
+    return _idToShapeMap.get(shapeId);
+  }
+
 
   private Integer getScheduledTimeForTimepoint(RouteStopSequenceItem item,
       Map<String, Integer> timepointPositions,
@@ -537,12 +791,12 @@ public class CommunityTransitGtfsFactory {
     transformer.setGtfsInputDirectory(_gtfsOutputPath);
     transformer.setOutputDirectory(_gtfsOutputPath);
 
-    TransformFactory modificationFactory = new TransformFactory();
+    TransformFactory modificationFactory = new TransformFactory(transformer);
     if (_modificationsPath.startsWith("http")) {
-      modificationFactory.addModificationsFromUrl(transformer, new URL(
+      modificationFactory.addModificationsFromUrl(new URL(
           _modificationsPath));
     } else {
-      modificationFactory.addModificationsFromFile(transformer, new File(
+      modificationFactory.addModificationsFromFile(new File(
           _modificationsPath));
     }
 
@@ -671,6 +925,142 @@ public class CommunityTransitGtfsFactory {
 
   public void setCalendarEndDate(ServiceDate endDate) {
 	_calendarEndDate = endDate;
+  }
+
+  /**
+   * Borrowed from OBA StopTimeEntriesFactory
+   * The {@link StopTime#getArrivalTime()} and
+   * {@link StopTime#getDepartureTime()} properties are optional. This method
+   * takes charge of interpolating the arrival and departure time for any
+   * StopTime where they are missing. The interpolation is based on the distance
+   * traveled along the current trip/block.
+   * 
+   * @param stopTimes
+   * @param distanceTraveled
+   * @param arrivalTimes
+   * @param departureTimes
+   */
+  private void interpolateArrivalAndDepartureTimes(List<StopTime> stopTimes,
+      double[] distanceTraveled, int[] arrivalTimes, int[] departureTimes) {
+
+    SortedMap<Double, Integer> scheduleTimesByDistanceTraveled = new TreeMap<Double, Integer>();
+
+    populateArrivalAndDepartureTimesByDistanceTravelledForStopTimes(stopTimes,
+        distanceTraveled, scheduleTimesByDistanceTraveled);
+
+    if (stopTimes.isEmpty()) {
+      _log.error("stopTimes is empty!");
+    }
+    for (int i = 0; i < stopTimes.size(); i++) {
+
+      StopTime stopTime = stopTimes.get(i);
+
+      double d = distanceTraveled[i];
+
+      boolean hasDeparture = stopTime.isDepartureTimeSet();
+      boolean hasArrival = stopTime.isArrivalTimeSet();
+
+      int departureTime = stopTime.getDepartureTime();
+      int arrivalTime = stopTime.getArrivalTime();
+
+      if (hasDeparture && !hasArrival) {
+        arrivalTime = departureTime;
+      } else if (hasArrival && !hasDeparture) {
+        departureTime = arrivalTime;
+      } else if (!hasArrival && !hasDeparture) {
+        int t = departureTimes[i] = (int) InterpolationLibrary.interpolate(
+            scheduleTimesByDistanceTraveled, d);
+        arrivalTime = t;
+        departureTime = t;
+      }
+
+      departureTimes[i] = departureTime;
+      arrivalTimes[i] = arrivalTime;
+
+      if (departureTimes[i] < arrivalTimes[i])
+        throw new IllegalStateException(
+            "departure time is less than arrival time for stop time with trip_id="
+                + stopTime.getTrip().getId() + " stop_sequence="
+                + stopTime.getStopSequence());
+
+      if (i > 0 && arrivalTimes[i] < departureTimes[i - 1]) {
+
+        /**
+         * The previous stop time's departure time comes AFTER this stop time's
+         * arrival time. That's bad.
+         */
+        StopTime prevStopTime = stopTimes.get(i - 1);
+        Stop prevStop = prevStopTime.getStop();
+        Stop stop = stopTime.getStop();
+
+        if (prevStop.equals(stop)
+            && arrivalTimes[i] == departureTimes[i - 1] - 1) {
+          _log.info("fixing decreasing passingTimes: stopTimeA="
+              + prevStopTime.getId() + " stopTimeB=" + stopTime.getId());
+          arrivalTimes[i] = departureTimes[i - 1];
+          if (departureTimes[i] < arrivalTimes[i])
+            departureTimes[i] = arrivalTimes[i];
+        } else {
+          for (int x = 0; x < stopTimes.size(); x++) {
+            StopTime st = stopTimes.get(x);
+            final String msg = x + " " + st.getId() + " " + arrivalTimes[x]
+                + " " + departureTimes[x];
+            _log.error(msg);
+            System.err.println(msg);
+          }
+          final String exceptionMessage = "arrival time is less than previous departure time for stop time with trip_id="
+              + stopTime.getTrip().getId() + " stop_sequence="
+              + stopTime.getStopSequence();
+          _log.error(exceptionMessage);
+            throw new IllegalStateException(exceptionMessage);
+        }
+      }
+    }
+  }
+
+  /**
+   * Borrowed from OBA StopTimeEntriesFactory.
+   * We have a list of StopTimes, along with their distance traveled along their
+   * trip/block. For any StopTime that has either an arrival or a departure
+   * time, we add it to the SortedMaps of arrival and departure times by
+   * distance traveled.
+   * 
+   * @param stopTimes
+   * @param distances
+   * @param arrivalTimesByDistanceTraveled
+   */
+  private void populateArrivalAndDepartureTimesByDistanceTravelledForStopTimes(
+      List<StopTime> stopTimes, double[] distances,
+      SortedMap<Double, Integer> scheduleTimesByDistanceTraveled) {
+
+    for (int i = 0; i < stopTimes.size(); i++) {
+
+      StopTime stopTime = stopTimes.get(i);
+      double d = distances[i];
+
+      // We introduce distinct arrival and departure distances so that our
+      // scheduleTimes map might have entries for arrival and departure times
+      // that are not the same at a given stop
+      double arrivalDistance = d;
+      double departureDistance = d + 1e-6;
+
+      /**
+       * For StopTime's that have the same distance travelled, we keep the min
+       * arrival time and max departure time
+       */
+      if (stopTime.getArrivalTime() >= 0) {
+        if (!scheduleTimesByDistanceTraveled.containsKey(arrivalDistance)
+            || scheduleTimesByDistanceTraveled.get(arrivalDistance) > stopTime.getArrivalTime())
+          scheduleTimesByDistanceTraveled.put(arrivalDistance,
+              stopTime.getArrivalTime());
+      }
+
+      if (stopTime.getDepartureTime() >= 0)
+        if (!scheduleTimesByDistanceTraveled.containsKey(departureDistance)
+            || scheduleTimesByDistanceTraveled.get(departureDistance) < stopTime.getDepartureTime())
+          scheduleTimesByDistanceTraveled.put(departureDistance,
+              stopTime.getDepartureTime());
+    }
   }
 
 }
