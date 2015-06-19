@@ -125,6 +125,8 @@ public class CommunityTransitGtfsFactory {
   private boolean _interpolateStopTimes = false;
 
   private int _invalidStopToShapeMappingExceptionCount;
+  
+  private MultiCSVLogger logger;
 
   public void setGisInputPath(File gisInputPath) {
     _gisInputPath = gisInputPath;
@@ -149,6 +151,9 @@ public class CommunityTransitGtfsFactory {
   public void run() throws Exception {
     _log.info("running with interpolateStopTimes=" + _interpolateStopTimes);
     
+    logger = new MultiCSVLogger();
+    logger.setBasePath(_gtfsOutputPath);
+    
     _distanceAlongShapeLibrary = new DistanceAlongShapeLibrary();
     
     processAgency();
@@ -167,6 +172,9 @@ public class CommunityTransitGtfsFactory {
     _dao = null;
 
     applyModifications();
+    
+    // this flushes the logs to disk
+    logger.summarize();
     
     if (this._invalidStopToShapeMappingExceptionCount > 0) {
       _log.warn("found " + _invalidStopToShapeMappingExceptionCount + " invalid stop to shape mappings");
@@ -192,6 +200,8 @@ public class CommunityTransitGtfsFactory {
 
     Iterator<SimpleFeature> it = features.iterator();
 
+    logger.header("stops.csv", "stop_id,primary_name,cross_name,computed_name,lat,lon");
+    
     while (it.hasNext()) {
 
       SimpleFeature feature = it.next();
@@ -207,6 +217,7 @@ public class CommunityTransitGtfsFactory {
       stop.setName(stopName);
       stop.setLat(point.getY());
       stop.setLon(point.getX());
+      logger.log("stops.csv", stopId, primaryName, crossName, stopName, point.getY(), point.getX());
       _dao.saveEntity(stop);
     }
 
@@ -226,6 +237,8 @@ public class CommunityTransitGtfsFactory {
 
     FeatureCollection<SimpleFeatureType, SimpleFeature> features = ShapefileLibrary.loadShapeFile(routesShapeFile);
 
+    logger.header("route_stops.csv", "route,rt_var,schedule_type,seqarc,seqart_id,length,rt_dir,route_dir,schedule,stopId,time_pt");
+    
     Iterator<SimpleFeature> it = features.iterator();
 
     while (it.hasNext()) {
@@ -255,6 +268,8 @@ public class CommunityTransitGtfsFactory {
       item.setStopId((Long) feature.getProperty("STOP_ID").getValue());
       item.setTimePoint((String) feature.getProperty("TIME_PT").getValue());
       item.setGeometry(feature.getDefaultGeometry());
+      logger.log("route_stops.csv", route, routeVariation, scheduleType, item.getSequenceArc(), item.getSequenceArcId(), item.getLength(),
+          item.getRouteDirection(), item.getRouteDirectionAlternate(), item.getSchedule(), item.getStopId(), item.getTimePoint());
       sequence.add(item);
     }
     features.close(it);
@@ -262,12 +277,14 @@ public class CommunityTransitGtfsFactory {
 
   private void processShapes() {
 
+    logger.header("shapes.csv", "raw_id,shape_id");
     for (Map.Entry<String, RouteStopSequence> entry : _stopSequences.entrySet()) {
 
       String rawId = entry.getKey();
       RouteStopSequence stopSequence = entry.getValue();
-
       AgencyAndId shapeId = id(rawId);
+      logger.log("shapes.csv", rawId, shapeId);
+      
       int sequence = 0;
       double distanceAlongShape = 0.0;
       List<ShapePoint> shapePoints = new ArrayList<ShapePoint>();
@@ -304,7 +321,9 @@ public class CommunityTransitGtfsFactory {
 
     List<PublicTimeTable> timetables = processScheduleDirectory(
         _scheduleInputPath, new ArrayList<PublicTimeTable>());
-
+    logger.header("schedules.csv", "booking_id,schedule_type,place_id,trip_sequence,trip_id,route_id,service_id,route_variation,stop_sequence,shape_id,trip_direction,direction_name");
+    
+    
     for (PublicTimeTable timetable : timetables) {
       int directionIndex = 0;
       for (PttPlaceInfo placeInfo : timetable.getPlaceInfos()) {
@@ -341,7 +360,8 @@ public class CommunityTransitGtfsFactory {
           trip.setServiceId(serviceId);
           trip.setShapeId(shapeId);
           trip.setTripHeadsign(placeInfo.getDirectionName());
-
+          logger.log("schedules.csv", timetable.getBookingIdentifier(), placeInfo.getScheduleType(), placeInfo.getId(), pttTrip.getSequence(),
+              tripId, route.getId(), serviceId, routeVariation, stopSequence, shapeId, trip.getDirectionId(), placeInfo.getDirectionName());
           _dao.saveEntity(trip);
 
           processStopTimesForTrip(timepointPositions, pttTrip, tripIdRaw,
@@ -754,6 +774,8 @@ public class CommunityTransitGtfsFactory {
 
   private void processCalendars() {
 
+    logger.header("calendars.csv", "id,scheduleType,service_calendar");
+    
     for (Map.Entry<AgencyAndId, String> entry : _serviceIdAndScheduleType.entrySet()) {
       AgencyAndId id = entry.getKey();
       String scheduleType = entry.getValue();
@@ -776,7 +798,7 @@ public class CommunityTransitGtfsFactory {
       }
       c.setStartDate(_calendarStartDate);
       c.setEndDate(_calendarEndDate);
-
+      logger.log("calendars.csv", id, scheduleType, c);
       _dao.saveEntity(c);
     }
   }
