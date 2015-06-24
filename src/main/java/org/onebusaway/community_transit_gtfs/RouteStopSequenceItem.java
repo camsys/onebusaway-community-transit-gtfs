@@ -40,6 +40,8 @@ public class RouteStopSequenceItem {
   private String timePoint;
 
   private Object geometry;
+  
+  private String boarding = null;
 
   public long getSequenceArc() {
     return sequenceArc;
@@ -135,6 +137,14 @@ public class RouteStopSequenceItem {
 
   public void setGeometry(Object geometry) {
     this.geometry = geometry;
+  }
+  
+  public String getBoarding() {
+    return boarding;
+  }
+  
+  public void setBoarding(String boarding) {
+    this.boarding = boarding;
   }
 
   @Override

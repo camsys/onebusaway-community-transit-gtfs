@@ -237,7 +237,7 @@ public class CommunityTransitGtfsFactory {
 
     FeatureCollection<SimpleFeatureType, SimpleFeature> features = ShapefileLibrary.loadShapeFile(routesShapeFile);
 
-    logger.header("route_stops.csv", "route,rt_var,schedule_type,seqarc,seqart_id,length,rt_dir,route_dir,schedule,stopId,time_pt");
+    logger.header("route_stops.csv", "route,rt_var,schedule_type,seqarc,seqart_id,length,rt_dir,route_dir,schedule,stopId,time_pt,purpose");
     
     Iterator<SimpleFeature> it = features.iterator();
 
@@ -268,8 +268,13 @@ public class CommunityTransitGtfsFactory {
       item.setStopId((Long) feature.getProperty("STOP_ID").getValue());
       item.setTimePoint((String) feature.getProperty("TIME_PT").getValue());
       item.setGeometry(feature.getDefaultGeometry());
+      String boarding = null;
+      if (feature.getProperty("BOARDING") != null) {
+        boarding = (String)feature.getProperty("BOARDING").getValue();
+        item.setBoarding(boarding);
+      }
       logger.log("route_stops.csv", route, routeVariation, scheduleType, item.getSequenceArc(), item.getSequenceArcId(), item.getLength(),
-          item.getRouteDirection(), item.getRouteDirectionAlternate(), item.getSchedule(), item.getStopId(), item.getTimePoint());
+          item.getRouteDirection(), item.getRouteDirectionAlternate(), item.getSchedule(), item.getStopId(), item.getTimePoint(), boarding);
       sequence.add(item);
     }
     features.close(it);
@@ -422,6 +427,11 @@ public class CommunityTransitGtfsFactory {
       stopTime.setStop(stop);
       stopTime.setStopSequence(index - firstStopIndex);
       stopTime.setTrip(trip);
+      if ("N".equals(item.getBoarding())) {
+        // timepoint -- not for pickup/drop off
+        stopTime.setDropOffType(1);
+        stopTime.setPickupType(1);
+      }
 
       if (time != null) {
         stopTime.setArrivalTime(time);
